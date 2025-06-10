@@ -19,28 +19,6 @@
 
 ---
 
-### 🚨 警示柱：数据无价，操作需慎！ 🚨
-
-**请务必注意：** 数据库中的数据是您的宝贵资产，任何删除操作都具有**不可逆转的破坏性**。在执行任何删除指令前，务必**三思、确认、再三确认！**
-
-**特别提醒：跨插件数据风险！**
-本插件具备直接操作**数据库表**的权限。这意味着它**可能意外删除甚至其他插件的数据**，例如：
-
-- [`astrbot_plugin_mnemosyne`](https://github.com/lxfight/astrbot_plugin_mnemosyne) 的记忆数据表。
-  （**使用 Milvus Server 作为数据库**）
-
-### 💔 血的教训与沉痛提醒 💔
-
-> **我们沉痛地提醒您，由于一次不慎的操作，社区成员 [@wuyan](https://github.com/wuyan1003) 曾经为此付出了巨大的代价：**
->
-> **痛失了数千条宝贵的记忆数据！**
->
-> **这是一次无法挽回的损失，也是我们永远的警钟。**
->
-> **愿后人引以为戒，切勿重蹈覆辙！**
-
----
-
 ## 🚀 核心功能一览
 
 <div align="center">
@@ -83,6 +61,8 @@
 通过向机器人发送以 `/kb` (或其别名 `知识库`) 开头的指令来与知识库互动。
 
 | 建议：不要创建插件配置中的默认知识库，这样可以实现RAG功能的关闭。
+
+阅读该文档获取更快速的使用指南说明：[AstrBot知识库 | AstrBot](https://astrbot.app/use/knowledge-base.html)
 
 **指令结构说明：**
 *   `[必选参数]`：表示该参数必须提供。
@@ -196,76 +176,71 @@
   <p>我们致力于让 AstrBot 知识库插件越来越好用！以下是近期的主要更新：</p>
 </div>
 
+
 <details open>
-  <summary>
-    <h3><img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Travel%20and%20places/Rocket.png" alt="Rocket" width="25" height="25" /> v0.4.0 - 体验优化与底层加固 <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Travel%20and%20places/Rocket.png" alt="Rocket" width="25" height="25" /></h3>
+   <summary>
+    <h3><img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Animals/Herb.png" alt="Herb" width="25" height="25" /> v0.5.7 - Faiss 内存优化与缓存机制 <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Animals/Herb.png" alt="Herb" width="25" height="25" /></h3>
   </summary>
-  <blockquote>
-    <p>本次更新聚焦于提升 Milvus Server 用户的使用体验，并对插件内部结构进行了优化，为未来的功能迭代打下坚实基础。</p>
+   <blockquote>
+    <p>本次更新重点优化了使用 Faiss 作为向量存储时的内存占用问题，引入智能缓存机制，提升插件长时间运行的资源效率。</p>
   </blockquote>
-  <ul>
+   <ul>
     <li>
-      <p>✨ <strong>[核心修复] Milvus Server 索引创建优化</strong></p>
-      <ul>
-        <li><strong>问题</strong>：此前版本中，当使用 Milvus Server 作为向量数据库时，<code>embedding</code> 字段可能未被正确、及时地创建索引，导致后续检索效率低下或功能异常。</li>
-        <li><strong>修复</strong>：我们重写并验证了 Milvus Server 的集合创建与索引管理逻辑，确保 <code>embedding</code> 字段在集合创建后能被<strong>自动且正确地创建向量索引</strong>。同时优化了索引存在性检查和加载流程，确保知识库在首次使用前已准备就绪。</li>
-        <li><strong>用户价值</strong>：使用 Milvus Server 的用户将体验到更稳定、高效的知识检索性能，无需手动干预索引创建。</li>
-      </ul>
-    </li>
+       <p>🍃 <strong>[性能优化] Faiss 存储引入 LRU 缓存 (LRU Cache)</strong></p>
+       <ul>
+         <li><strong>背景</strong>：在知识库数量较多或单个知识库体积较大时，将所有 Faiss 索引加载到内存中可能导致较高的内存占用。</li>
+         <li><strong>优化</strong>：针对 `Faiss` 向量数据库存储方式，引入了最近最少使用（LRU, Least Recently Used）缓存策略。</li>
+         <li><strong>效果</strong>：长时间未被访问的知识库索引将根据缓存策略自动从内存中卸载，仅在被再次访问（如 `/kb use` 或 `/kb search`）时重新加载。此举能显著**降低插件在空闲或低频使用期间的整体内存占用**，提升资源利用率和在低配置设备上的运行稳定性。</li>
+       </ul>
+     </li>
     <li>
-      <p>🏗️ <strong>[架构升级] 代码结构重构</strong></p>
+      <p>⚠️ <strong>[重要兼容性说明] 旧版 Faiss 文件升级建议</strong></p>
       <ul>
-        <li><strong>改进</strong>：对插件内部代码进行了模块化重构，使得各功能模块职责更清晰，代码更易于理解和维护。</li>
-        <li><strong>未来展望</strong>：此次重构为后续引入更多高级功能（如更细致的权限管理、更丰富的导入导出选项、插件间交互API等）铺平了道路。</li>
-      </ul>
-    </li>
-    <li>
-      <p>📄 <strong>[增强] 文件编码支持扩展</strong></p>
-      <ul>
-        <li>针对 <code>.txt</code> 和 <code>.md</code> 文件增加了更多的文件编码格式支持。</li>
-      </ul>
-    </li>
-  </ul>
-</details>
-
-<details>
-  <summary>
-    <h3><img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Travel%20and%20places/Airplane.png" alt="Airplane" width="25" height="25" /> v0.3.0 - 数据处理能力飞跃 <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Travel%20and%20places/Airplane.png" alt="Airplane" width="25" height="25" /></h3>
-  </summary>
-  <blockquote>
-    <p>本次更新是里程碑式的，带来了对多种文件格式的强大支持，并显著提升了数据处理的效率和兼容性。</p>
-  </blockquote>
-  <ul>
-    <li>
-      <p>🌟 <strong>[重磅功能] 全能文本解析引擎集成！</strong></p>
-      <ul>
-        <li><strong>新能力</strong>：深度集成了业界领先的 <code>markitdown</code> 解析库，现在您可以<strong>直接导入并解析</strong>以下多种主流文件格式的内容作为知识源：
+         <li><strong>限制</strong>：新的 LRU 缓存策略**暂无法支持**由旧版本插件生成的 Faiss 储存文件。这些文件仍可被读取使用，但无法应用内存优化策略（会始终保留在内存中）。</li>
+        <li><strong>如何识别旧文件</strong>：具体指位于 `/AstrBot/data/plugin_data/astrbot_plugin_knowledge_base/faiss_data` 目录下：
           <ul>
-            <li>文档：<code>.pdf</code>, <code>.docx</code>, <code>.doc</code></li>
-            <li>演示文稿：<code>.pptx</code>, <code>.ppt</code></li>
-            <li>表格数据：<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code></li>
-            <li>网页与结构化数据：<code>.html</code>, <code>.htm</code>, <code>.json</code>, <code>.xml</code></li>
-            <li>电子书：<code>.epub</code></li>
-            <li>图片内容提取 (LLM)：<code>.jpg</code>, <code>.jpeg</code>, <code>.png</code> (依赖相应 LLM 配置)</li>
-            <li>音频内容提取 (LLM): <code>.mp3</code>, <code>.flac</code>, <code>.wav</code>, <code>.ogg</code>, <code>.acc</code>, <code>.aiff</code>
-          </ul>
+            <li>以 `.docx` 为后缀的文件（非常早期的版本）。</li>
+             <li>文件名**非 `KBDB_` 开头**的储存文件。</li>
+           </ul>
+         (新版本生成的、支持缓存的文件均以 `KBDB_` 开头)
         </li>
-        <li><strong>用户价值</strong>：告别手动复制粘贴！现在可以轻松地将您已有的各种格式文档、报告、网页内容直接转化为机器人知识库的一部分，极大拓宽了知识获取的边界，提升了知识库构建效率。</li>
-        <li>💖 <strong>特别鸣谢</strong>：此项功能的实现离不开社区成员 <a href="https://github.com/Yxiguan">@Yxiguan</a> 的核心代码贡献！</li>
+        <li>💡 <strong>操作建议</strong>：
+        如果用户仍保留有构建知识库时使用的**原始文件**（如.txt, .md, .pdf, .docx等），强烈建议：
+           <ol>
+            <li>（可选但推荐）备份您的原始文件和旧的 faiss_data 目录。</li>
+            <li>使用 `/kb delete [旧知识库名称]` 指令（或手动删除 `faiss_data` 下对应的旧文件）。</li>
+           </ol>
+         重新生成的文件将自动采用新格式（`KBDB_`开头）并支持 LRU 缓存，从而享受内存优化效果。
+         </li>
       </ul>
-    </li>
-    <li>
-      <p>🛠️ <strong>[优化与修复] 依赖与稳定性</strong></p>
-      <ul>
-        <li>优化了插件依赖管理，减少了潜在的冲突。</li>
-        <li>修复了若干在特定环境下可能出现的兼容性问题。</li>
-        <li>提升了处理大型文件时的稳定性和内存使用效率。</li>
-      </ul>
-    </li>
-  </ul>
+     </li>
+   </ul>
 </details>
 
-<hr>
+**请在执行删除操作前务必确认您拥有原始数据文件！**
+---
+
+### 🚨 警示柱：数据无价，操作需慎！ 🚨
+
+**请务必注意：** 数据库中的数据是您的宝贵资产，任何删除操作都具有**不可逆转的破坏性**。在执行任何删除指令前，务必**三思、确认、再三确认！**
+
+**特别提醒：跨插件数据风险！**
+本插件具备直接操作**数据库表**的权限。这意味着它**可能意外删除甚至其他插件的数据**，例如：
+
+- [`astrbot_plugin_mnemosyne`](https://github.com/lxfight/astrbot_plugin_mnemosyne) 的记忆数据表。
+  （**使用 Milvus Server 作为数据库**）
+
+### 💔 血的教训与沉痛提醒 💔
+
+> **我们沉痛地提醒您，由于一次不慎的操作，社区成员 [@wuyan](https://github.com/wuyan1003) 曾经为此付出了巨大的代价：**
+>
+> **痛失了数千条宝贵的记忆数据！**
+>
+> **这是一次无法挽回的损失，也是我们永远的警钟。**
+>
+> **愿后人引以为戒，切勿重蹈覆辙！**
+
+---
 
 ## 🛣️ 未来发展路线图 (Roadmap)
 
