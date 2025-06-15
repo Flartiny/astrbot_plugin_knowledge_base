@@ -4,6 +4,7 @@ from typing import List, Dict, Tuple, Optional, Any
 from .base import (
     VectorDBBase,
     Document,
+    DEFAULT_BATCH_SIZE
 )
 from astrbot.api import logger
 from ..utils.embedding import EmbeddingSolutionHelper
@@ -16,8 +17,6 @@ class ChromaStore(VectorDBBase):
     ):
         super().__init__(embedding_util, data_path)
         self.client: Optional[chromadb.Client] = None
-        # In ChromaDB, metadata needs to be filtered with specific operators.
-        # We'll store our own document map for easy retrieval.
         self.doc_mappings: Dict[str, Dict[str, Document]] = {}
 
     async def initialize(self):
@@ -74,51 +73,66 @@ class ChromaStore(VectorDBBase):
         if collection_name not in self.doc_mappings:
             self.doc_mappings[collection_name] = {}
 
-        texts = [doc.text_content for doc in documents]
-        embeddings = await self.embedding_util.get_embeddings_async(
-            texts, collection_name
-        )
+        all_doc_ids = []
 
-        valid_docs = []
-        doc_ids = []
-        metadatas = []
-        embeddings_to_add = []
-
-        for i, doc in enumerate(documents):
-            if embeddings[i]:
-                doc_id = str(uuid.uuid4())
-                doc.id = doc_id
-                doc.embedding = embeddings[i]
-
-                valid_docs.append(doc)
-                doc_ids.append(doc_id)
-                metadatas.append(doc.metadata)
-                embeddings_to_add.append(embeddings[i])
-
-        if not doc_ids:
-            return []
-
-        try:
-            collection.add(
-                embeddings=embeddings_to_add,
-                metadatas=metadatas,
-                documents=[doc.text_content for doc in valid_docs],
-                ids=doc_ids,
-            )
-
-            for doc in valid_docs:
-                self.doc_mappings[collection_name][doc.id] = doc
-
+        # Process documents in batches
+        for i in range(0, len(documents), DEFAULT_BATCH_SIZE):
+            batch_docs = documents[i : i + DEFAULT_BATCH_SIZE]
             logger.info(
-                f"Successfully added {len(doc_ids)} documents to ChromaDB collection '{collection_name}'."
+                f"Processing batch {i // DEFAULT_BATCH_SIZE + 1} with {len(batch_docs)} documents."
             )
-            return doc_ids
-        except Exception as e:
-            logger.error(
-                f"Failed to add documents to ChromaDB collection '{collection_name}': {e}",
-                exc_info=True,
+
+            texts = [doc.text_content for doc in batch_docs]
+            embeddings = await self.embedding_util.get_embeddings_async(
+                texts, collection_name
             )
-            return []
+
+            valid_docs = []
+            doc_ids = []
+            metadatas = []
+            embeddings_to_add = []
+
+            for j, doc in enumerate(batch_docs):
+                if embeddings and embeddings[j]:
+                    doc_id = str(uuid.uuid4())
+                    doc.id = doc_id
+                    doc.embedding = embeddings[j]
+
+                    valid_docs.append(doc)
+                    doc_ids.append(doc_id)
+                    metadatas.append(doc.metadata)
+                    embeddings_to_add.append(embeddings[j])
+
+            if not doc_ids:
+                logger.warning("No valid documents or embeddings in the current batch.")
+                continue
+
+            try:
+                collection.add(
+                    embeddings=embeddings_to_add,
+                    metadatas=metadatas,
+                    documents=[doc.text_content for doc in valid_docs],
+                    ids=doc_ids,
+                )
+
+                for doc in valid_docs:
+                    self.doc_mappings[collection_name][doc.id] = doc
+
+                all_doc_ids.extend(doc_ids)
+                logger.info(
+                    f"Successfully added batch of {len(doc_ids)} documents to ChromaDB collection '{collection_name}'."
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to add a batch of documents to ChromaDB collection '{collection_name}': {e}",
+                    exc_info=True,
+                )
+                # Decide if you want to stop or continue with other batches
+                # For now, we log the error and continue
+                pass
+
+        return all_doc_ids
 
     async def search(
         self, collection_name: str, query_text: str, top_k: int = 5
@@ -143,15 +157,13 @@ class ChromaStore(VectorDBBase):
             )
 
             docs = []
-            if results and results["ids"] and results["ids"][0]:
+            if results and results.get("ids") and results["ids"][0]:
                 ids = results["ids"][0]
                 distances = results["distances"][0]
                 metadatas = results["metadatas"][0]
                 contents = results["documents"][0]
 
                 for i, doc_id in enumerate(ids):
-                    # Chroma returns distance, we convert it to a similarity score
-                    # L2 distance is non-negative, a simple conversion can be 1 / (1 + distance)
                     similarity = 1.0 / (1.0 + distances[i])
                     doc = Document(
                         id=doc_id, text_content=contents[i], metadata=metadatas[i]
