@@ -1,10 +1,13 @@
 import chromadb
 import uuid
-from typing import List, Dict, Tuple, Optional, Any
-from .base import VectorDBBase, Document, DEFAULT_BATCH_SIZE
+import asyncio
+from typing import List, Dict, Tuple, Optional
+from .base import (
+    VectorDBBase,
+    Document,
+)
 from astrbot.api import logger
 from ..utils.embedding import EmbeddingSolutionHelper
-import asyncio
 
 
 class ChromaStore(VectorDBBase):
@@ -14,12 +17,19 @@ class ChromaStore(VectorDBBase):
         super().__init__(embedding_util, data_path)
         self.client: Optional[chromadb.Client] = None
         self.doc_mappings: Dict[str, Dict[str, Document]] = {}
+        # The batch size for adding documents to ChromaDB itself
+        self.chroma_batch_size = 64
+        # The batch size for getting embeddings, can be smaller to avoid API timeouts
+        self.embedding_batch_size = 10
 
     async def initialize(self):
         logger.info(f"Initializing ChromaDB client at path: {self.data_path}...")
         try:
             self.client = chromadb.PersistentClient(path=self.data_path)
-            logger.info("ChromaDB client initialized successfully.")
+            self.chroma_batch_size = self.client.max_batch_size
+            logger.info(
+                f"ChromaDB client initialized. Max batch size: {self.chroma_batch_size}"
+            )
         except Exception as e:
             logger.error(f"Failed to initialize ChromaDB client: {e}", exc_info=True)
             self.client = None
@@ -69,71 +79,104 @@ class ChromaStore(VectorDBBase):
         if collection_name not in self.doc_mappings:
             self.doc_mappings[collection_name] = {}
 
-        all_doc_ids = []
+        # The queue will hold tuples of (embeddings, metadatas, contents, ids)
+        insertion_queue = asyncio.Queue(maxsize=10)  # Set a maxsize for backpressure
+        all_added_ids = []
 
-        # Process documents in batches
-        for i in range(0, len(documents), DEFAULT_BATCH_SIZE):
-            batch_num = i // DEFAULT_BATCH_SIZE + 1
-            batch_docs = documents[i : i + DEFAULT_BATCH_SIZE]
-            logger.info(
-                f"Processing batch {batch_num} with {len(batch_docs)} documents."
-            )
+        # --- Consumer Task ---
+        async def consumer():
+            while True:
+                processed_batch = await insertion_queue.get()
+                if processed_batch is None:  # Sentinel value indicates done
+                    insertion_queue.task_done()
+                    break
 
-            try:
-                texts = [doc.text_content for doc in batch_docs]
-                # This is the most likely point of failure
-                embeddings = await self.embedding_util.get_embeddings_async(
-                    texts, collection_name
-                )
-
-                valid_docs = []
-                doc_ids = []
-                metadatas = []
-                embeddings_to_add = []
-
-                for j, doc in enumerate(batch_docs):
-                    if embeddings and embeddings[j]:
-                        doc_id = str(uuid.uuid4())
-                        doc.id = doc_id
-                        doc.embedding = embeddings[j]
-
-                        valid_docs.append(doc)
-                        doc_ids.append(doc_id)
-                        metadatas.append(doc.metadata)
-                        embeddings_to_add.append(embeddings[j])
-
-                if not doc_ids:
-                    logger.warning(
-                        f"No valid documents or embeddings in batch {batch_num}."
+                embeddings, metadatas, contents, ids = processed_batch
+                try:
+                    collection.add(
+                        embeddings=embeddings,
+                        metadatas=metadatas,
+                        documents=contents,
+                        ids=ids,
                     )
-                    continue
+                    all_added_ids.extend(ids)
+                    logger.info(
+                        f"Consumer successfully added batch of {len(ids)} documents to ChromaDB."
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Consumer failed to add batch to ChromaDB: {e}", exc_info=True
+                    )
+                finally:
+                    insertion_queue.task_done()
 
-                collection.add(
-                    embeddings=embeddings_to_add,
-                    metadatas=metadatas,
-                    documents=[doc.text_content for doc in valid_docs],
-                    ids=doc_ids,
-                )
-
-                for doc in valid_docs:
-                    self.doc_mappings[collection_name][doc.id] = doc
-
-                all_doc_ids.extend(doc_ids)
+        # --- Producer Task ---
+        async def producer():
+            for i in range(0, len(documents), self.embedding_batch_size):
+                batch_docs = documents[i : i + self.embedding_batch_size]
+                batch_num = (i // self.embedding_batch_size) + 1
                 logger.info(
-                    f"Successfully added batch {batch_num} of {len(doc_ids)} documents to ChromaDB collection '{collection_name}'."
+                    f"Producer processing batch {batch_num} with {len(batch_docs)} documents."
                 )
 
-            except Exception as e:
-                # Catch any exception during the batch processing, log it, and continue
-                logger.error(
-                    f"Failed to process or add batch {batch_num} to ChromaDB collection '{collection_name}'. Error: {e}",
-                    exc_info=True,
-                )
-                # Continue to the next batch instead of crashing
-                continue
+                try:
+                    texts = [doc.text_content for doc in batch_docs]
+                    embeddings = await self.embedding_util.get_embeddings_async(
+                        texts, collection_name
+                    )
 
-        return all_doc_ids
+                    valid_docs = []
+                    doc_ids = []
+                    metadatas = []
+                    embeddings_to_add = []
 
+                    for j, doc in enumerate(batch_docs):
+                        if embeddings and embeddings[j]:
+                            doc_id = str(uuid.uuid4())
+                            doc.id = doc_id
+                            doc.embedding = embeddings[j]
+                            valid_docs.append(doc)
+                            doc_ids.append(doc_id)
+                            metadatas.append(doc.metadata)
+                            embeddings_to_add.append(embeddings[j])
+
+                    if doc_ids:
+                        await insertion_queue.put(
+                            (
+                                embeddings_to_add,
+                                metadatas,
+                                [d.text_content for d in valid_docs],
+                                doc_ids,
+                            )
+                        )
+                        # Update doc mappings immediately after successful embedding
+                        for doc in valid_docs:
+                            self.doc_mappings[collection_name][doc.id] = doc
+                    else:
+                        logger.warning(
+                            f"Producer found no valid documents/embeddings in batch {batch_num}."
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        f"Producer failed to process batch {batch_num}: {e}",
+                        exc_info=True,
+                    )
+
+            # After all batches are processed, signal the consumer to stop
+            await insertion_queue.put(None)
+
+        # --- Run the tasks ---
+        consumer_task = asyncio.create_task(consumer())
+        producer_task = asyncio.create_task(producer())
+
+        await asyncio.gather(producer_task)  # Wait for the producer to finish
+        await insertion_queue.join()  # Wait for the consumer to process all items
+        consumer_task.cancel()  # Clean up the consumer task
+
+        return all_added_ids
+
+    # --- Other methods (search, delete_collection, etc.) remain the same ---
     async def search(
         self, collection_name: str, query_text: str, top_k: int = 5
     ) -> List[Tuple[Document, float]]:
