@@ -37,7 +37,9 @@ class RecursiveCharacterTextSplitter:
             "",  # 字符
         ]
 
-    def split_text(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
+    def split_text(
+        self, text: str, chunk_size: int = None, overlap: int = None
+    ) -> List[str]:
         """
         递归地将文本分割成块
 
@@ -118,7 +120,9 @@ class RecursiveCharacterTextSplitter:
 
         return [text]
 
-    def _split_by_character(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
+    def _split_by_character(
+        self, text: str, chunk_size: int = None, overlap: int = None
+    ) -> List[str]:
         """
         按字符级别分割文本
 
@@ -141,9 +145,7 @@ class RecursiveCharacterTextSplitter:
 
 
 class TextSplitterUtil:
-    def __init__(
-        self, chunk_size: int, chunk_overlap: int
-    ):
+    def __init__(self, chunk_size: int, chunk_overlap: int):
         """
         初始化文本分割器。
         Args:
@@ -159,7 +161,7 @@ class TextSplitterUtil:
         )
         # logger.info(f"文本分割器初始化：chunk_size={chunk_size}, chunk_overlap={chunk_overlap}")
 
-    def split_text(self, text: str, chunk_size: int = None, overlap = None) -> List[str]:
+    def split_text(self, text: str, chunk_size: int = None, overlap=None) -> List[str]:
         """
         将文本分割成块。
         Args:

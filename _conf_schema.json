@@ -6,7 +6,8 @@
         "options": [
             "faiss",
             "milvus_lite",
-            "milvus"
+            "milvus",
+            "chroma"
         ]
     },
     "default_collection_name": {
@@ -49,6 +50,12 @@
         "type": "string",
         "default": "milvus_lite_data/milvus_lite.db",
         "hint": "(相对于持久化数据目录 'AstrBot/data/plugins_data/astrbot_plugin_knowledge_base/', 仅当 vector_db_type 为 'milvus_lite' 时有效)"
+    },
+    "chroma_db_subpath": {
+        "description": "ChromaDB 数据存储子路径",
+        "type": "string",
+        "default": "chroma_data",
+        "hint": "(相对于持久化数据目录 'AstrBot/data/plugins_data/astrbot_plugin_knowledge_base/', 仅当 vector_db_type 为 'chroma' 时有效)"
     },
     "text_chunk_size": {
         "description": "文本分块大小 (字符数)",

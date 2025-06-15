@@ -5,6 +5,7 @@ from astrbot.api.event import AstrMessageEvent
 if TYPE_CHECKING:
     from ..main import KnowledgeBasePlugin
 
+
 async def handle_kb_help(
     plugin: "KnowledgeBasePlugin", event: AstrMessageEvent
 ) -> AsyncGenerator[AstrMessageEvent, None]:

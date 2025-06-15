@@ -818,9 +818,7 @@ class MilvusStore(VectorDBBase):
                     entity_data = result.get("entity", {})
                     text_content = entity_data.get("text_content", "")
 
-                    metadata = {
-                        k: v for k, v in result.items() if k != "entity"
-                    }
+                    metadata = {k: v for k, v in result.items() if k != "entity"}
 
                     doc = Document(
                         id=doc_id, text_content=text_content, metadata=metadata

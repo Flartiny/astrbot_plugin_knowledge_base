@@ -100,7 +100,9 @@ def _check_and_install_package_uv(
                     logger.info(f"信息: {friendly_name} 通过 UV 成功安装，现在可用。")
                     return True
                 except ImportError:
-                    logger.error(f"错误: {friendly_name} 报告已通过 UV 安装，但仍无法导入。")
+                    logger.error(
+                        f"错误: {friendly_name} 报告已通过 UV 安装，但仍无法导入。"
+                    )
                     return False
             else:
                 return False
@@ -113,14 +115,14 @@ def _check_and_install_package_uv(
 
 
 def ensure_vector_db_dependencies(
-    db_type: Literal["faiss", "milvus_lite", "milvus"],
+    db_type: Literal["faiss", "milvus_lite", "milvus", "chroma"],
 ) -> bool:
     """
     根据指定的向量数据库类型，检查并自动安装所需的 Python 包。
     此版本只支持 FAISS-CPU，不再安装 FAISS-GPU。
 
     参数:
-        db_type (Literal["faiss", "milvus_lite", "milvus"]):
+        db_type (Literal["faiss", "milvus_lite", "milvus", "chroma"]):
             要使用的向量数据库类型。
 
     返回:
@@ -172,9 +174,17 @@ def ensure_vector_db_dependencies(
         )
         if not optional_deps_ok:
             logger.error("错误: Pymilvus 依赖未能满足。")
+
+    elif db_type == "chroma":
+        logger.info("准备 ChromaDB 依赖项...")
+        optional_deps_ok &= _check_and_install_package_uv(
+            "chromadb", ">=0.5.0", friendly_name="ChromaDB"
+        )
+        if not optional_deps_ok:
+            logger.error("错误: ChromaDB 依赖未能满足。")
     else:
         logger.error(
-            f"错误: 不支持的向量数据库类型: {db_type}。请选择 'faiss', 'milvus_lite' 或 'milvus'。"
+            f"错误: 不支持的向量数据库类型: {db_type}。请选择 'faiss', 'milvus_lite', 'milvus', 或 'chroma'。"
         )
         optional_deps_ok = False
 

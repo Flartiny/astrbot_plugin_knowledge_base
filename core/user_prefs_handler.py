@@ -5,6 +5,7 @@ from typing import Dict, AsyncGenerator, TYPE_CHECKING
 
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import AstrMessageEvent
+
 if TYPE_CHECKING:
     from ..vector_store.base import VectorDBBase
 
@@ -87,9 +88,7 @@ class UserPrefsHandler:
 
     def get_collection_name_by_file_id(self, file_id: str = None) -> dict:
         """获取集合的元数据，包括嵌入提供商信息"""
-        metadatas = self.user_collection_preferences.get(
-            "collection_metadata", {}
-        )
+        metadatas = self.user_collection_preferences.get("collection_metadata", {})
         for collection_name, metadata in metadatas.items():
             if metadata.get("file_id") == file_id:
                 return collection_name

@@ -29,6 +29,7 @@ else:
     from .vector_store.astrbot_faiss_store import FaissStore
 from .vector_store.milvus_lite_store import MilvusLiteStore
 from .vector_store.milvus_store import MilvusStore
+from .vector_store.chroma_store import ChromaStore
 from .web_api import KnowledgeBaseWebAPI
 from .core.user_prefs_handler import UserPrefsHandler
 from .core.llm_enhancer import clean_contexts_from_kb_content, enhance_request_with_kb
@@ -164,6 +165,12 @@ class KnowledgeBasePlugin(Star):
                     user=self.config.get("milvus_user"),
                     password=self.config.get("milvus_password"),
                 )
+            elif db_type == "chroma":
+                chroma_subpath = self.config.get("chroma_db_subpath", "chroma_data")
+                chroma_full_path = os.path.join(
+                    self.persistent_data_root_path, chroma_subpath
+                )
+                self.vector_db = ChromaStore(self.embedding_util, chroma_full_path)
             else:
                 logger.error(f"不支持的向量数据库类型: {db_type}，请检查配置。")
                 return
