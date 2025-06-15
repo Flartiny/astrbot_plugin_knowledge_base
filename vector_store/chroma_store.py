@@ -1,11 +1,7 @@
 import chromadb
 import uuid
 from typing import List, Dict, Tuple, Optional, Any
-from .base import (
-    VectorDBBase,
-    Document,
-    DEFAULT_BATCH_SIZE
-)
+from .base import VectorDBBase, Document, DEFAULT_BATCH_SIZE
 from astrbot.api import logger
 from ..utils.embedding import EmbeddingSolutionHelper
 import asyncio
@@ -76,38 +72,42 @@ class ChromaStore(VectorDBBase):
         all_doc_ids = []
 
         # Process documents in batches
-        for i in range(0, len(documents), DEFAULT_BATCH_SIZE):
-            batch_docs = documents[i : i + DEFAULT_BATCH_SIZE]
+        for i in range(0, len(documents), self.batch_size):
+            batch_num = i // self.batch_size + 1
+            batch_docs = documents[i : i + self.batch_size]
             logger.info(
-                f"Processing batch {i // DEFAULT_BATCH_SIZE + 1} with {len(batch_docs)} documents."
+                f"Processing batch {batch_num} with {len(batch_docs)} documents."
             )
-
-            texts = [doc.text_content for doc in batch_docs]
-            embeddings = await self.embedding_util.get_embeddings_async(
-                texts, collection_name
-            )
-
-            valid_docs = []
-            doc_ids = []
-            metadatas = []
-            embeddings_to_add = []
-
-            for j, doc in enumerate(batch_docs):
-                if embeddings and embeddings[j]:
-                    doc_id = str(uuid.uuid4())
-                    doc.id = doc_id
-                    doc.embedding = embeddings[j]
-
-                    valid_docs.append(doc)
-                    doc_ids.append(doc_id)
-                    metadatas.append(doc.metadata)
-                    embeddings_to_add.append(embeddings[j])
-
-            if not doc_ids:
-                logger.warning("No valid documents or embeddings in the current batch.")
-                continue
 
             try:
+                texts = [doc.text_content for doc in batch_docs]
+                # This is the most likely point of failure
+                embeddings = await self.embedding_util.get_embeddings_async(
+                    texts, collection_name
+                )
+
+                valid_docs = []
+                doc_ids = []
+                metadatas = []
+                embeddings_to_add = []
+
+                for j, doc in enumerate(batch_docs):
+                    if embeddings and embeddings[j]:
+                        doc_id = str(uuid.uuid4())
+                        doc.id = doc_id
+                        doc.embedding = embeddings[j]
+
+                        valid_docs.append(doc)
+                        doc_ids.append(doc_id)
+                        metadatas.append(doc.metadata)
+                        embeddings_to_add.append(embeddings[j])
+
+                if not doc_ids:
+                    logger.warning(
+                        f"No valid documents or embeddings in batch {batch_num}."
+                    )
+                    continue
+
                 collection.add(
                     embeddings=embeddings_to_add,
                     metadatas=metadatas,
@@ -120,17 +120,17 @@ class ChromaStore(VectorDBBase):
 
                 all_doc_ids.extend(doc_ids)
                 logger.info(
-                    f"Successfully added batch of {len(doc_ids)} documents to ChromaDB collection '{collection_name}'."
+                    f"Successfully added batch {batch_num} of {len(doc_ids)} documents to ChromaDB collection '{collection_name}'."
                 )
 
             except Exception as e:
+                # Catch any exception during the batch processing, log it, and continue
                 logger.error(
-                    f"Failed to add a batch of documents to ChromaDB collection '{collection_name}': {e}",
+                    f"Failed to process or add batch {batch_num} to ChromaDB collection '{collection_name}'. Error: {e}",
                     exc_info=True,
                 )
-                # Decide if you want to stop or continue with other batches
-                # For now, we log the error and continue
-                pass
+                # Continue to the next batch instead of crashing
+                continue
 
         return all_doc_ids
 
