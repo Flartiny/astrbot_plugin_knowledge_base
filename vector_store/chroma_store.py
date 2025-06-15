@@ -72,9 +72,9 @@ class ChromaStore(VectorDBBase):
         all_doc_ids = []
 
         # Process documents in batches
-        for i in range(0, len(documents), self.batch_size):
-            batch_num = i // self.batch_size + 1
-            batch_docs = documents[i : i + self.batch_size]
+        for i in range(0, len(documents), DEFAULT_BATCH_SIZE):
+            batch_num = i // DEFAULT_BATCH_SIZE + 1
+            batch_docs = documents[i : i + DEFAULT_BATCH_SIZE]
             logger.info(
                 f"Processing batch {batch_num} with {len(batch_docs)} documents."
             )
