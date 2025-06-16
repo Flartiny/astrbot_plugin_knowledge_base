@@ -1,14 +1,17 @@
 import chromadb
 import uuid
-from typing import List, Dict, Tuple, Optional, Any
+import asyncio
+from typing import List, Dict, Tuple, Optional
+
 from .base import (
     VectorDBBase,
     Document,
-    DEFAULT_BATCH_SIZE
+    ProcessingBatch,
+    DEFAULT_BATCH_SIZE,
+    MAX_RETRIES,
 )
 from astrbot.api import logger
 from ..utils.embedding import EmbeddingSolutionHelper
-import asyncio
 
 
 class ChromaStore(VectorDBBase):
@@ -18,31 +21,35 @@ class ChromaStore(VectorDBBase):
         super().__init__(embedding_util, data_path)
         self.client: Optional[chromadb.Client] = None
         self.doc_mappings: Dict[str, Dict[str, Document]] = {}
+        # 遵循 faiss_store.py 的做法，使用 DEFAULT_BATCH_SIZE
+        self.embedding_batch_size = DEFAULT_BATCH_SIZE
 
     async def initialize(self):
-        logger.info(f"Initializing ChromaDB client at path: {self.data_path}...")
+        logger.info(f"初始化 ChromaDB 客户端，路径: {self.data_path}...")
         try:
-            self.client = chromadb.PersistentClient(path=self.data_path)
-            logger.info("ChromaDB client initialized successfully.")
+            # ChromaDB 客户端的IO操作是同步的，使用 to_thread 包装以避免阻塞
+            self.client = await asyncio.to_thread(
+                chromadb.PersistentClient, path=self.data_path
+            )
+            logger.info("ChromaDB 客户端初始化成功。")
         except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB client: {e}", exc_info=True)
+            logger.error(f"初始化 ChromaDB 客户端失败: {e}", exc_info=True)
             self.client = None
             raise
 
     async def create_collection(self, collection_name: str):
         if not self.client:
-            raise ConnectionError("ChromaDB client not initialized.")
+            raise ConnectionError("ChromaDB 客户端未初始化。")
         try:
-            self.client.create_collection(name=collection_name)
+            # 同步操作，使用 to_thread
+            await asyncio.to_thread(self.client.create_collection, name=collection_name)
             self.doc_mappings[collection_name] = {}
-            logger.info(
-                f"ChromaDB collection '{collection_name}' created successfully."
-            )
+            logger.info(f"ChromaDB 集合 '{collection_name}' 创建成功。")
         except chromadb.errors.DuplicateCollectionError:
-            logger.info(f"ChromaDB collection '{collection_name}' already exists.")
+            logger.info(f"ChromaDB 集合 '{collection_name}' 已存在。")
         except Exception as e:
             logger.error(
-                f"Failed to create ChromaDB collection '{collection_name}': {e}",
+                f"创建 ChromaDB 集合 '{collection_name}' 时出错: {e}",
                 exc_info=True,
             )
             raise
@@ -51,12 +58,12 @@ class ChromaStore(VectorDBBase):
         if not self.client:
             return False
         try:
-            collections = self.client.list_collections()
+            # 同步操作，使用 to_thread
+            collections = await asyncio.to_thread(self.client.list_collections)
             return any(col.name == collection_name for col in collections)
         except Exception as e:
             logger.error(
-                f"Error checking if collection '{collection_name}' exists: {e}",
-                exc_info=True,
+                f"检查集合 '{collection_name}' 是否存在时出错: {e}", exc_info=True
             )
             return False
 
@@ -64,75 +71,103 @@ class ChromaStore(VectorDBBase):
         self, collection_name: str, documents: List[Document]
     ) -> List[str]:
         if not self.client:
-            raise ConnectionError("ChromaDB client not initialized.")
+            raise ConnectionError("ChromaDB 客户端未初始化。")
 
         if not await self.collection_exists(collection_name):
+            logger.warning(f"ChromaDB 集合 '{collection_name}' 不存在，将自动创建。")
             await self.create_collection(collection_name)
 
-        collection = self.client.get_collection(name=collection_name)
+        collection = await asyncio.to_thread(
+            self.client.get_collection, name=collection_name
+        )
         if collection_name not in self.doc_mappings:
             self.doc_mappings[collection_name] = {}
 
-        all_doc_ids = []
+        processing_queue: asyncio.Queue[ProcessingBatch] = asyncio.Queue()
+        all_added_ids: List[str] = []
 
-        # Process documents in batches
-        for i in range(0, len(documents), DEFAULT_BATCH_SIZE):
-            batch_docs = documents[i : i + DEFAULT_BATCH_SIZE]
-            logger.info(
-                f"Processing batch {i // DEFAULT_BATCH_SIZE + 1} with {len(batch_docs)} documents."
-            )
+        # --- 生产者：将文档分批放入队列 ---
+        num_batches = 0
+        for i in range(0, len(documents), self.embedding_batch_size):
+            batch_docs = documents[i : i + self.embedding_batch_size]
+            await processing_queue.put(ProcessingBatch(documents=batch_docs))
+            num_batches += 1
+        logger.info(f"已将 {len(documents)} 份文档分成 {num_batches} 个批次放入队列。")
 
-            texts = [doc.text_content for doc in batch_docs]
-            embeddings = await self.embedding_util.get_embeddings_async(
-                texts, collection_name
-            )
+        # --- 消费者：从队列取出批次处理，包含重试逻辑 ---
+        processed_batches_count = 0
+        failed_batches_discarded_count = 0
 
-            valid_docs = []
-            doc_ids = []
-            metadatas = []
-            embeddings_to_add = []
+        while processed_batches_count < num_batches:
+            try:
+                processing_batch = await processing_queue.get()
+            except asyncio.CancelledError:
+                break
 
-            for j, doc in enumerate(batch_docs):
-                if embeddings and embeddings[j]:
-                    doc_id = str(uuid.uuid4())
-                    doc.id = doc_id
-                    doc.embedding = embeddings[j]
+            current_docs = processing_batch.documents
+            current_retry = processing_batch.retry_count
 
-                    valid_docs.append(doc)
-                    doc_ids.append(doc_id)
-                    metadatas.append(doc.metadata)
-                    embeddings_to_add.append(embeddings[j])
-
-            if not doc_ids:
-                logger.warning("No valid documents or embeddings in the current batch.")
-                continue
+            log_prefix = f"[批次, 重试 {current_retry}/{MAX_RETRIES}]"
+            logger.debug(f"{log_prefix} 正在处理 {len(current_docs)} 个文档...")
 
             try:
-                collection.add(
-                    embeddings=embeddings_to_add,
-                    metadatas=metadatas,
-                    documents=[doc.text_content for doc in valid_docs],
-                    ids=doc_ids,
+                # --- 核心处理逻辑 ---
+                texts = [doc.text_content for doc in current_docs]
+                embeddings = await self.embedding_util.get_embeddings_async(
+                    texts, collection_name
                 )
 
-                for doc in valid_docs:
-                    self.doc_mappings[collection_name][doc.id] = doc
+                valid_docs, doc_ids, metadatas, embeddings_to_add = [], [], [], []
+                for i, doc in enumerate(current_docs):
+                    if embeddings and embeddings[i]:
+                        doc_id = str(uuid.uuid4())
+                        doc.id = doc_id
+                        valid_docs.append(doc)
+                        doc_ids.append(doc_id)
+                        metadatas.append(doc.metadata)
+                        embeddings_to_add.append(embeddings[i])
 
-                all_doc_ids.extend(doc_ids)
-                logger.info(
-                    f"Successfully added batch of {len(doc_ids)} documents to ChromaDB collection '{collection_name}'."
-                )
+                if doc_ids:
+                    # 使用 to_thread 执行同步的 add 操作
+                    await asyncio.to_thread(
+                        collection.add,
+                        embeddings=embeddings_to_add,
+                        metadatas=metadatas,
+                        documents=[d.text_content for d in valid_docs],
+                        ids=doc_ids,
+                    )
+                    for doc in valid_docs:
+                        self.doc_mappings[collection_name][doc.id] = doc
+                    all_added_ids.extend(doc_ids)
+                    logger.debug(f"{log_prefix} 成功添加 {len(doc_ids)} 个文档。")
+                else:
+                    logger.warning(f"{log_prefix} 没有有效的文档可供添加。")
+
+                processed_batches_count += 1
+                processing_queue.task_done()
 
             except Exception as e:
-                logger.error(
-                    f"Failed to add a batch of documents to ChromaDB collection '{collection_name}': {e}",
-                    exc_info=True,
-                )
-                # Decide if you want to stop or continue with other batches
-                # For now, we log the error and continue
-                pass
+                logger.error(f"{log_prefix} 处理失败: {e}", exc_info=True)
+                if current_retry < MAX_RETRIES:
+                    processing_batch.retry_count += 1
+                    await processing_queue.put(processing_batch)
+                    logger.warning(f"{log_prefix} 将批次重新放入队列进行重试...")
+                else:
+                    logger.error(f"{log_prefix} 批次达到最大重试次数，将被丢弃。")
+                    processed_batches_count += 1  # 丢弃也算处理完成
+                    failed_batches_discarded_count += 1
+                    processing_queue.task_done()
 
-        return all_doc_ids
+        await processing_queue.join()
+
+        logger.info(
+            f"向 ChromaDB 集合 '{collection_name}' 添加操作完成。成功添加 {len(all_added_ids)} 个文档。"
+        )
+        if failed_batches_discarded_count > 0:
+            logger.warning(
+                f"其中 {failed_batches_discarded_count} 个批次因重试失败被丢弃。"
+            )
+        return all_added_ids
 
     async def search(
         self, collection_name: str, query_text: str, top_k: int = 5
@@ -140,8 +175,10 @@ class ChromaStore(VectorDBBase):
         if not self.client or not await self.collection_exists(collection_name):
             return []
 
-        collection = self.client.get_collection(name=collection_name)
-        if collection.count() == 0:
+        collection = await asyncio.to_thread(
+            self.client.get_collection, name=collection_name
+        )
+        if await asyncio.to_thread(collection.count) == 0:
             return []
 
         query_embedding = await self.embedding_util.get_embedding_async(
@@ -151,17 +188,21 @@ class ChromaStore(VectorDBBase):
             return []
 
         try:
-            results = collection.query(
+            # 同步操作，使用 to_thread
+            results = await asyncio.to_thread(
+                collection.query,
                 query_embeddings=[query_embedding],
                 n_results=top_k,
             )
 
             docs = []
             if results and results.get("ids") and results["ids"][0]:
-                ids = results["ids"][0]
-                distances = results["distances"][0]
-                metadatas = results["metadatas"][0]
-                contents = results["documents"][0]
+                ids, distances, metadatas, contents = (
+                    results["ids"][0],
+                    results["distances"][0],
+                    results["metadatas"][0],
+                    results["documents"][0],
+                )
 
                 for i, doc_id in enumerate(ids):
                     similarity = 1.0 / (1.0 + distances[i])
@@ -172,7 +213,7 @@ class ChromaStore(VectorDBBase):
             return docs
         except Exception as e:
             logger.error(
-                f"Failed to search in ChromaDB collection '{collection_name}': {e}",
+                f"在 ChromaDB 集合 '{collection_name}' 中搜索失败: {e}",
                 exc_info=True,
             )
             return []
@@ -181,16 +222,14 @@ class ChromaStore(VectorDBBase):
         if not self.client or not await self.collection_exists(collection_name):
             return False
         try:
-            self.client.delete_collection(name=collection_name)
+            await asyncio.to_thread(self.client.delete_collection, name=collection_name)
             if collection_name in self.doc_mappings:
                 del self.doc_mappings[collection_name]
-            logger.info(
-                f"ChromaDB collection '{collection_name}' deleted successfully."
-            )
+            logger.info(f"ChromaDB 集合 '{collection_name}' 删除成功。")
             return True
         except Exception as e:
             logger.error(
-                f"Failed to delete ChromaDB collection '{collection_name}': {e}",
+                f"删除 ChromaDB 集合 '{collection_name}' 时出错: {e}",
                 exc_info=True,
             )
             return False
@@ -199,25 +238,27 @@ class ChromaStore(VectorDBBase):
         if not self.client:
             return []
         try:
-            collections = self.client.list_collections()
+            collections = await asyncio.to_thread(self.client.list_collections)
             return [col.name for col in collections]
         except Exception as e:
-            logger.error(f"Failed to list ChromaDB collections: {e}", exc_info=True)
+            logger.error(f"列出 ChromaDB 集合失败: {e}", exc_info=True)
             return []
 
     async def count_documents(self, collection_name: str) -> int:
         if not self.client or not await self.collection_exists(collection_name):
             return 0
         try:
-            collection = self.client.get_collection(name=collection_name)
-            return collection.count()
+            collection = await asyncio.to_thread(
+                self.client.get_collection, name=collection_name
+            )
+            return await asyncio.to_thread(collection.count)
         except Exception as e:
             logger.error(
-                f"Failed to count documents in ChromaDB collection '{collection_name}': {e}",
+                f"统计 ChromaDB 集合 '{collection_name}' 文档数时出错: {e}",
                 exc_info=True,
             )
             return 0
 
     async def close(self):
-        logger.info("ChromaDB client does not require explicit closing.")
+        logger.info("ChromaDB 客户端无需显式关闭。")
         await asyncio.sleep(0)
